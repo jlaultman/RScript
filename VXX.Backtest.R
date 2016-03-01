@@ -1,22 +1,28 @@
-library(RCurl)
-library(quantmod)
-
-sit = getURLContent('https://github.com/systematicinvestor/SIT/raw/master/sit.gz', binary=TRUE, followlocation = TRUE, ssl.verifypeer = FALSE)
-con = gzcon(rawConnection(sit, 'rb'))
+setInternet2(TRUE)
+con = gzcon(url('http://www.systematicportfolio.com/sit.gz', 'rb'))
 source(con)
 close(con)
 
-data <- new.env()  
-tickers<-spl('USDCAD')
-file.path<- 'T:/DERIV/Aultman/Projects/Data Sets/'
-#Specify the name of the asset and where the csv file is located on your computer. (You can find more ways to load data here.)
-for(n in tickers) { data[[n]] = read.xts(paste(file.path, n, '.csv', sep=''), format='%m / %d / %y %H:%M') }
-bt.prep(data, align='remove.na')
-#Load and clean the data
+#*****************************************************************
+# Load historical data
+#****************************************************************** 
 
+tickers = spl('VXX,^VIX,^VXV')
+
+data <- new.env()
+getSymbols(tickers, src = 'yahoo', from = '1980-01-01', env = data, auto.assign = T)
+for(i in data$symbolnames) data[[i]] = adjustOHLC(data[[i]], use.Adjusted=T)
+bt.prep(data, align='remove.na', fill.gaps = T)
+
+VIX = Cl(data$VIX)
+bt.prep.remove.symbols(data, 'VIX')
+
+#*****************************************************************
+# Setup
+#*****************************************************************
 prices = data$prices
+
 models = list()
-#Specify the prices and store our models
 
 data$weight[] = NA
 data$weight[] = 1

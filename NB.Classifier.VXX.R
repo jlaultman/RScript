@@ -3,22 +3,22 @@ library(e1071)
 library(ggplot2)
 
 # load historical data, getSymbols from quantmod
-#getSymbols("SPY")
+getSymbols("SPY")
 #SPY<-SPY['2010:']
 #chartSeries(SPY)
 
 Data<-USDCAD
-#Data<-data.frame(date=index(SPYxts), coredata(SPYxts))
-#colnames(Data)[5]<-"Close"
+Data<-data.frame(date=index(SPYxts), coredata(SPYxts))
+colnames(Data)[5]<-"Close"
 #Our dataset
-#CCI20xts<-CCI(Data[,3:5,n=20])
+CCI20xts<-CCI(SPYxts[,3:5,n=20])
 CCI20<-CCI(Data[,3:5],n=20)
 #A 20-period Commodity Channel Index calculated of the High/Low/Close of our data
-#chartSeries(CCI20xts)
+chartSeries(CCI20xts)
 
 RSI3<-RSI(Cl(Data),n=3)
 #A 3-period RSI calculated off the close
-#chartSeries(RSI3)
+chartSeries(RSI3)
 
 DEMA10<-DEMA(Cl(Data),n = 10, v = 1, wilder = FALSE)
 DEMA10c<-Cl(Data) - DEMA10
@@ -40,7 +40,7 @@ DataSet<-data.frame(Indicators,Class)
 DataSet<-DataSet[-c(1:19),]
 #Remove the instances where the indicators are still being calculated.
 
-Training<-DataSet[1:2760,];Test<-DataSet[2761:3680,];Validation<-DataSet[3681:4600,]
+Training<-DataSet[1:3800,];Test<-DataSet[3801:4200,];Validation<-DataSet[4201:4600,]
 #Separate into a training set (60% of the data), test set (20% of the data), and validation set (20% of the data).
 
 
@@ -91,3 +91,4 @@ length(LongAcc)+length(ShortAcc)
 #Total number of trades
 ((sum(ShortAcc)+sum(LongAcc))/(length(LongAcc)+length(ShortAcc)))*100
 #Total accuracy
+
