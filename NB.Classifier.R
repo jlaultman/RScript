@@ -1,3 +1,4 @@
+#new stuff
 library(quantmod)
 library(e1071)
 library(ggplot2)
