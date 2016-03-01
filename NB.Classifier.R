@@ -1,3 +1,4 @@
+#last updated 20160229 @ 9:32:35 PM
 library(quantmod)
 library(e1071)
 library(ggplot2)
