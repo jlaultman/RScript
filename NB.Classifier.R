@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 #last updated 20160229 @ 9:32:35 PM
+=======
+#new stuff
+>>>>>>> 59e874a926a379fbd6aeab2a5538add1debf01fd
 library(quantmod)
 library(e1071)
 library(ggplot2)
