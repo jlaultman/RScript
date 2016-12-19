@@ -1,0 +1,361 @@
+library(quantstrat)
+library(IKTrading)
+Sys.setenv(TZ="America/New_York")
+if (!exists('.strategy')) .strategy <- new.env()
+if (!exists('.blotter')) .blotter <- new.env()
+
+## -------------------    Initialize Start/End Date    --------------------------------------
+initDate = '2016-11-01'
+.from=initDate
+.to='2016-11-23'
+
+## -------------------    Define Currency/Trade Instrument    ------------------------------
+currency('USD')
+future(primary_id = 'ESZ6', 
+       currency = "USD", 
+       multiplier=50, 
+       tick_size=.25, 
+       exchange="CME Globex", 
+       description="SP500 Future")
+
+## -------------------    Load Market Data    ----------------------------------------------
+getSymbols.FI(Symbols='ESZ6',
+	      dir='/Users/josephaultman/Strategy/Strategies/',
+	      from=.from, to=.to)
+index(ESZ6) <- as.POSIXct(strptime(index(ESZ6),format = "%Y-%m-%d %H:%M:%S", tz = "America/New_York"))
+ESZ6$Imb <- round(ESZ6$AvgBidSz-ESZ6$AvgAskSz,0)
+drops <- c("AvgAsk","AvgBid","AvgBidSz","AvgAskSz","VWAP")
+ESZ6 <- ESZ6[ , !(names(ESZ6) %in% drops)]
+
+## -------------------    Initialize Chart Theme    -----------------------------------------
+myTheme<-chart_theme()
+myTheme$col$dn.col<-'lightblue'
+myTheme$col$dn.border <- 'lightgray'
+myTheme$col$up.border <- 'lightgray'
+chart_Series(ESZ6,theme=myTheme)
+
+## -------------------    Initialize Parameter Set     --------------------------------------
+# moving average lengths
+.fast = 5
+.slow = 5
+
+# trade parameters
+.txnfees = -1.9
+
+.tplong = 0.75
+.tpshort = -0.75
+
+.sllong = -1.25
+.slshort = 1.25
+
+# trading window
+.timespan = 'T09:30/T16:00'
+
+
+## --------------------------  Initialize Acct Names  --------------------------------------
+strategy.st <- portfolio.st <- account.st <- "LOB_VolSpike"
+
+## --------------------------  Remove Stategy to ReRun  ---------------------------------------
+rm.strat(portfolio.st)
+rm.strat(account.st)
+
+## --------------------------  Initialize Accounts --------------------------------------------
+initPortf(portfolio.st, symbols='ESZ6', initDate=initDate, currency='USD')
+initAcct(account.st, portfolios=portfolio.st,initDate=initDate,currency='USD')
+initOrders(portfolio.st, initDate=initDate)
+strategy(strategy.st, store=TRUE)
+
+## --------------------------   Add Position Limits  ----------------------------------------
+addPosLimit( portfolio = portfolio.st, # add position limit rules
+             symbol = 'ESZ6',
+             timestamp = initDate,
+             maxpos = 1,
+             longlevels = 1,
+             minpos = -1)
+
+#################################   Indicators   ####################################
+## -----------------------   Fast Period Moving Average  ----------------------------
+add.indicator(strategy.st, name = "SMA",
+	arguments = list(
+		x = quote(mktdata$Imb),
+		n = .fast
+	),
+	label="lobImb"
+)
+
+## Indicator function
+volRatio <- function(x, n = 5) 
+{
+  sma <- SMA(Vo(x), n)
+  vRatio <- Vo(x)/sma
+  #vSignal <- ifelse(vRatio >= 4, 1, 0)
+  return(vRatio)
+}
+
+# lobImbalance <- function(x, n = 5)
+# {
+#   imb <- SMA(x$Imb, n)
+#   imbSignal <- ifelse(imb >= 150, 1, ifelse(imb <= -150, -1, 0))
+#   return(imbSignal)
+# }
+
+add.indicator(strategy.st, name="volRatio",
+  arguments = list(
+    x = quote(mktdata),
+    n = 5
+    ),
+  label = "vRatio"
+)
+
+strat.ind <- applyIndicators(strategy = strategy.st, mktdata = ESZ6)
+tail(strat.ind)
+
+# ## -----------------------   Slow Period Moving Average  ----------------------------
+# add.indicator(strategy.st, name="SMA",
+# 	arguments = list(
+# 		x = quote(mktdata$Imb),
+# 		n = .slow
+# 	),
+# 	label="nSlow"
+# )
+
+
+#################################   Signals   ####################################
+## -----------------------   LOB Bid Side Threshold Cross  ----------------------------
+add.signal(strategy.st, 
+           name = 'sigThreshold',
+           arguments = list(column ="lobImb",
+                            threshold = +150,
+                            relationship="gt",
+                            cross=TRUE
+           ),
+           label = 'lobBuy'
+)
+
+## -----------------------   LOB Ask Side Threshold Cross  ----------------------------
+add.signal(strategy.st, 
+           name = 'sigThreshold',
+           arguments = list(column ="lobImb",
+                            threshold = -150,
+                            relationship = "lt",
+                            cross = TRUE
+                            ),
+           label = 'lobSell'
+)
+
+## -----------------------   Volume Spike Threshold Cross  ----------------------------
+add.signal(strategy.st, 
+           name='sigThreshold',
+	         arguments = list(column = "vRatio",
+	                          threshold = 4,
+	                          relationship = "gt",
+                            cross = TRUE
+	                          ),
+	         label='volSpike'
+)
+
+## -----------------------   Volume Spike & LOB Bid Imbalance  ----------------------------
+add.signal(strategy.st, 
+           name='sigAND',
+           arguments = list(columns = c('lobBuy', 'volSpike'),
+                            cross = TRUE
+                            ),
+           label="long"
+)
+
+## -----------------------   Volume Spike & LOB Ask Imbalance  ----------------------------
+add.signal(strategy.st, 
+           name='sigAND',
+           arguments = list(columns = c('lobSell', 'volSpike'),
+                            cross = TRUE
+           ),
+           label="short"
+)
+
+###########################################   Long Entry #####################################
+add.rule(strategy.st, 
+         name = 'ruleSignal',
+         arguments = list(sigcol = 'long',
+                          sigval = TRUE,
+                          replace = FALSE,
+                          TxnFees = .txnfees,
+                          orderside = 'long',
+                          prefer = 'Open',
+                          ordertype = 'market',
+                          orderqty = +1,
+                          osFUN = osMaxPos,
+                          orderset = 'ocolong'
+         ),
+         type = 'enter',
+         label = 'EnterLONG'
+)
+
+#--------------------------------------------    Long Exit    ----------------------------------
+add.rule(strategy.st, 
+         name = 'ruleSignal',
+         arguments = list(sigcol = 'short',
+                          sigval = TRUE,
+                          replace = FALSE,
+                          TxnFees = .txnfees,
+                          orderside = 'long',
+                          prefer = 'Open',
+                          ordertype = 'market',
+                          orderqty = 'all',
+                          orderset = 'ocolong'
+         ),
+         type = 'exit',
+         label = 'ExitLONG2SHORT'
+)
+#--------------------------------------------    Long Stop Loss   -----------------------------
+add.rule(strategy.st, 
+         name = 'ruleSignal',
+         arguments = list(sigcol = 'long',
+                          sigval = TRUE,
+                          replace = FALSE,
+                          TxnFees = .txnfees,
+                          orderside = 'long',
+                          prefer = 'Open',
+                          ordertype = 'stoplimit',
+                          orderqty = 'all',
+                          orderset = 'ocolong',
+                          threshold = .sllong
+         ),
+         type = 'chain',
+         parent = 'EnterLONG',
+         label = 'StopLossLONG'
+)
+#-----------------------------------------    Long Take Profit    -----------------------------
+add.rule(strategy.st, 
+         name = 'ruleSignal',
+         arguments = list(sigcol = 'long',
+                          sigval = TRUE,
+                          replace = FALSE,
+                          TxnFees = .txnfees,
+                          orderside = 'long',
+                          prefer = 'Open',
+                          ordertype = 'limit',
+                          orderqty = 'all',
+                          orderset = 'ocolong',
+                          threshold = .tplong
+         ),
+         type = 'chain',
+         parent = 'EnterLONG',
+         label = 'TakeProfitLONG'
+)
+###########################################   Short Entry #####################################
+add.rule(strategy.st, 
+         name = 'ruleSignal',
+         arguments = list(sigcol = 'short',
+                          sigval = TRUE,
+                          replace = FALSE,
+                          TxnFees = .txnfees,
+                          orderside = 'short',
+                          prefer = 'Open',
+                          ordertype = 'market',
+                          orderqty = -1,
+                          osFUN = osMaxPos
+         ),
+         type = 'enter',
+         label = 'EnterSHORT'
+)
+
+#--------------------------------------------    Short Exit    ----------------------------------
+add.rule(strategy.st, 
+         name = 'ruleSignal',
+         arguments = list(sigcol = 'long',
+                          sigval = TRUE,
+                          replace = FALSE,
+                          TxnFees = .txnfees,
+                          orderside = 'short',
+                          prefer = 'Open',
+                          ordertype = 'market',
+                          orderqty = 'all',
+                          orderset = 'ocoshort'
+         ),
+         type = 'exit',
+         label = 'ExitSHORT2LONG'
+)
+#--------------------------------------------    Short Stop Loss   -----------------------------
+add.rule(strategy.st, 
+         name = 'ruleSignal',
+         arguments = list(sigcol = 'short',
+                          sigval = TRUE,
+                          replace = FALSE,
+                          TxnFees = .txnfees,
+                          orderside = 'short',
+                          prefer = 'Open',
+                          ordertype = 'stoplimit',
+                          orderqty = 'all',
+                          orderset = 'ocoshort',
+                          threshold = .slshort
+         ),
+         type = 'chain',
+         parent = 'EnterSHORT',
+         label = 'StopLossSHORT'
+)
+#-----------------------------------------    Short Take Profit    -----------------------------
+add.rule(strategy.st, 
+         name = 'ruleSignal',
+         arguments = list(sigcol = 'short',
+                          sigval = TRUE,
+                          replace = FALSE,
+                          TxnFees = .txnfees,
+                          orderside = 'short',
+                          prefer = 'Open',
+                          ordertype = 'limit',
+                          orderqty = 'all',
+                          orderset = 'ocoshort',
+                          threshold = .tpshort
+         ),
+         type = 'chain',
+         parent = 'EnterSHORT',
+         label = 'TakeProfitSHORT'
+)
+
+## ------------    Run Program    ------------------------------------
+
+t1 <- Sys.time()
+out <- applyStrategy(strategy.st, portfolio.st)
+t2 <- Sys.time()
+cat("Time to run strategy:",t2-t1, "seconds")
+
+updatePortf(portfolio.st)
+dateRange <- time(getPortfolio(portfolio.st)$summary)[-1]
+updateAcct(portfolio.st,dateRange)
+updateEndEq(account.st)
+
+## ------------    Chart Algo Position/P&L   -------------------------------------------------
+chart.Posn(Portfolio = portfolio.st,
+  Symbol = "ESZ6",
+  TA=c("add_TA(mktdata$Volume.vRatio,col=2,type='h')"),
+  theme=myTheme)
+  #subset = "2016-11-14 15:00/2016-11-15 10:30")
+
+###########################################   Trade Statistics ##########################################################
+tStats <- tradeStats(Portfolios = portfolio.st, use = "trades", inclZeroDays = FALSE)
+tStats[,4:ncol(tStats)] <- round(tStats[,4:ncol(tStats)],2)
+print(data.frame(t(tStats[,-c(1,2)])))
+(aggPF <- sum(tStats$Gross.Profits)/-sum(tStats$Gross.Losses))
+(aggCorrect <- mean(tStats$Percent.Positive))
+(numTrades <- sum(tStats$Num.Trades))
+(meanAvgWLR <- mean(tStats$Avg.WinLoss.Ratio[tStats$Avg.WinLoss.Ratio < Inf], na.rm=TRUE))
+
+## ----LUXORSTATS1---------------------------------------------------------
+PerformanceAnalytics:::textplot(t(tradeStats(portfolio.st, 'ESZ6')))
+
+## ----MKTDATA-------------------------------------------------------------
+mk <- mktdata['2016-11-01 09:30::2016-11-01 11:00']
+mk.df <- data.frame(Date=time(mk),coredata(mk))
+PerformanceAnalytics:::textplot(mk.df,show.rownames=F)
+
+## ----ORDERBOOK,fig.width=9,	fig.height=6---------------------------------
+ob <- getOrderBook(portfolio.st)$LOB_VolSpike$ESZ6
+ob.df <- data.frame(Date=time(ob),coredata(ob))
+PerformanceAnalytics:::textplot(ob.df,show.rownames=F)
+
+## ----PERTRADESTATS-------------------------------------------------------
+PerformanceAnalytics:::textplot(perTradeStats(portfolio.st,"ESZ6"),
+  show.rownames=F)
+
+## ----MAE,fig.width=7,	fig.height=7---------------------------------------
+chart.ME(portfolio.st,'ESZ6',type='MAE',scale='percent')
