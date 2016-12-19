@@ -1,0 +1,168 @@
+library(randomForest)
+library(caret)
+library(e1071)
+library(quantstrat)
+
+Sys.setenv(TZ="America/New_York")
+initDate = '2016-11-17'
+.from=initDate
+.to='2016-11-17'
+
+getSymbols.FI(Symbols='ESZ6',
+              dir='/Users/josephaultman/Strategy/Strategies/',
+              from=.from, to=.to)
+index(ESZ6) <- as.POSIXct(strptime(index(ESZ6),format = "%Y-%m-%d %H:%M:%S", tz = "America/New_York"))
+ESZ6$Imb <- round(ESZ6$AvgBidSz-ESZ6$AvgAskSz,0)
+#drops <- c("AvgAsk","AvgBid","AvgBidSz","AvgAskSz","VWAP")
+#ESZ6 <- ESZ6[ , !(names(ESZ6) %in% drops)]
+
+ESZ6$Ret <- lag((lag(Cl(ESZ6),5) - Op(ESZ6)),-1)
+class <- as.data.frame(ifelse(ESZ6$Ret == 0,"Cash",ifelse(ESZ6$Ret < 0,"Short","Long")))
+#retHi <- runMax(Hi(ESZ6), n = 60) - Op(ESZ6)
+#retLo <- runMin(Lo(ESZ6), n = 60) - Op(ESZ6)
+retHi <- Hi(ESZ6) - Op(ESZ6)
+retLo <- Lo(ESZ6) - Op(ESZ6)
+LoHi <- retHi + retLo
+LoHilag <- lag(LoHi, -1)
+class <- lag(Cl(ESZ6),-1)
+
+myTheme <- chart_theme()
+myTheme$col$dn.col <- 'red'
+myTheme$col$up.col <- 'green'
+myTheme$col$dn.border <- 'lightgray'
+myTheme$col$up.border <- 'lightgray'
+myTheme$col$bg <- "lightgray"
+myTheme$col$border <- "lightgray"
+
+chart_Series(x = ESZ6, 
+             #subset = "T10:17/T10:24", 
+             type = "candlesticks", 
+             theme=myTheme) 
+add_Vo()
+add_BBands()
+add_MACD()
+add_TA(SMA(ESZ6$Volume,5), on=2)
+add_TA(ESZ6$AvgBidSz,col='green',type='h', lwd=3)
+add_TA(-ESZ6$AvgAskSz,col='red',type='h', lwd=3, on=3)
+add_TA(ESZ6$Imb,col='black',type='l', lwd=1, on=3)
+abline(h=0, col="black")
+
+#ret <- lag(LoHi,-17)
+#ret <- lag(ret,-1)
+#class <- as.data.frame(ifelse(ret == 0,"Cash",ifelse(ret <= -0.25,"Short","Long")))
+class <- as.data.frame(ifelse(LoHilag > 0,"Long",ifelse(LoHilag < -0,"Short","Cash")))
+#class <- as.data.frame(ifelse(retHi > 1.00,"Long","Cash"))
+#class <- na.omit(class)
+
+#Vwap Calculations
+BidVWAP <- SMA(ESZ6$AvgBid, n=5)/SMA(ESZ6$VWAP,5)
+
+#MACD of VXX
+MACD <- MACD(Cl(ESZ6),fast = 12, slow = 26, signal = 9) #Calculate a MACD with standard parameters
+MACDsignal <- MACD[,2] #Grab just the signal line to use as our indicator.
+
+MACDimb <- MACD(ESZ6$Imb,fast = 12, slow = 26, signal = 9) #Calculate a MACD with standard parameters
+MACDsigImb <- MACDimb[,2] #Grab just the signal line to use as our indicator.
+
+MACDvol <- MACD(ESZ6$Volume,fast = 12, slow = 26, signal = 9) #Calculate a MACD with standard parameters
+MACDsigVol <- MACDvol[,2] #Grab just the signal line to use as our indicator.
+
+#Average True Range
+ATR <- ATR(HLC(ESZ6), n=18)
+
+# imbalance calculations
+imbSMA5 <- SMA(ESZ6$Imb, n=5)
+imbSMA18 <- SMA(ESZ6$Imb, n=18)
+imbRatio <- ifelse(ESZ6$Imb == 0, 0 ,ESZ6$Imb/imbSMA5)
+imbXover <- imbSMA5 - imbSMA18
+
+# Volume calculations
+volSMA5 <- SMA(ESZ6$Volume, n=5)
+volSMA18 <- SMA(ESZ6$Volume, n=18)
+volRatio <- ifelse(ESZ6$Volume == 0, 0 ,ESZ6$Volume/volSMA5)
+volXover <- volSMA5 - volSMA18
+
+Features <- data.frame(MACDsignal, MACDsigImb, MACDsigVol, 
+                       imbSMA5, imbSMA18,imbXover, #imbRatio
+                       volSMA5, volSMA18, volRatio, volXover, 
+                       ATR) #Combine all of our features
+
+#FeaturesShifted <- as.xts(Features[-nrow(class),]) #Match up with our class
+ModelData <- data.frame(class, Features) #Combine our two data sets
+ModelDataNA <- ModelData[-c(1:33),] #Remove the instances where the indicators are being calculated
+FinalModelData <- na.omit(ModelDataNA)
+
+colnames(FinalModelData)<-c("Class","MACDsig", "MACDsigImb", "MACDsigVol", 
+                            "imbSMA5", "imbSMA18","ImbCross",#"ImbRatio",
+                            "volSMA5", "volSMA18", "VolRatio","VolCross", 
+                            "TrueRng", "ATR", "TrueHi", "TrueLo") #Name the columns
+
+df <- coredata(FinalModelData)
+
+bound <- floor((nrow(df)/4)*3)         #define % of training and test set
+#df <- df[sample(nrow(df)), ]           #sample rows 
+df.train <- df[1:bound, ]              #get training set
+df.test <- df[(bound+1):nrow(df), ]    #get test set
+
+set.seed(1) #Set the initial random seed to help get reproducible results
+myTimeControl <- trainControl(method = "timeslice", 
+                              initialWindow =380, 
+                              horizon =38, 
+                              fixedWindow = TRUE)
+
+rfModel <- train(Class~.,
+                 data=df.train,
+                 method = "rf",
+                 tunelength = 10, 
+                 ntrees = 1000, 
+                 importance = TRUE,
+                 trControl =myTimeControl)
+
+FeatureNumber<-tuneRF(df.train[,2:15],df.train[,1],ntreeTry=100, stepFactor=1.5,
+                      improve=0.01, trace=TRUE, plot=TRUE, dobest=FALSE) 
+#We are evaluating the features (columns 1 through 9) using the class (column 9) to find the 
+#optimal number of features per tree
+
+
+RandomForest<-randomForest(Class~.,data=df.train,mtry=4,ntree=2000,keep.forest=TRUE,importance=TRUE) 
+#We are using all of the features to predict the class, with 2 features per tree, 
+#a forest of 2,000 trees, keeping the final forest and we want to measure the importance of each feature. 
+#Note: this may take a couple minutes to run.
+varImpPlot(RandomForest)
+varImp(RandomForest)
+test.result <- predict(RandomForest, df.test[,2:15])
+
+varImp(rfModel)
+plot(varImp(rfModel))
+plot(rfModel)
+
+set.seed(100)
+rfPredict<-predict(rfModel ,df[,2:15])
+outPrice<-df[,1]
+cor(outPrice,rfPredict)
+compDF <- data.frame(outPrice,rfPredict)
+accuracy(rfPredict,outPrice,d=NULL)
+
+signal <- Delt(rfPredict,k=60,type="log")
+MarketReturn <- Delt(outPrice,k=60,type="log")
+tradingfunc<-function(x){ 
+  ifelse(x>0,"Long",ifelse(x<0,"Short",NA))
+}
+
+AlgoTRADE <- apply(signal,1,tradingfunc)
+MarketTRADE <- apply(MarketReturn,1,tradingfunc)
+Table<-table(AlgoTRADE,MarketTRADE)
+confusionMatrix(AlgoTRADE,MarketTRADE)
+
+ggplot(compDF, aes(x=index(compDF))) +
+  geom_line(aes(y=compDF$outPrice,colour='blue')) + 
+  geom_line(aes(y=compDF$rfPredict,colour='red'))
+
+dr.test <- data.frame(df.test$Class,test.result)
+correct <- ifelse(df.test$Class == test.result,1,0)
+sumcorrec <- sum(correct)/length(correct)*100
+confusionMatrix(test.result, df.test$Class)
+
+ggplot(dr.test, aes(x=index(dr.test))) +
+  geom_line(aes(y=SMA(dr.test$df.test.Class,10),colour='blue')) + 
+  geom_line(aes(y=dr.test$test.result,colour='red'))
